@@ -9,6 +9,8 @@ import {
   isPlaywrightAlreadyClosedError,
   isPageLoggedIn,
   cleanupOrphanProfiles,
+  shouldRestoreStorageStateCookies,
+  pickRefreshToken,
 } from "../services/playwright.ts";
 test("Playwright Storage State: getStorageStatePath returns storage_state.json inside profile path", () => {
   const accountId = "test-acc-123";
@@ -60,6 +62,22 @@ test("Playwright Storage State: saveStorageState bounds hung storageState call w
   } finally {
     if (timer) clearTimeout(timer);
   }
+});
+
+test("Playwright Storage State: restores saved auth cookie into a non-empty guest profile", () => {
+  const guestCookies = [{ name: "qwen-locale", value: "en-US" }, { name: "refresh_token", value: "refresh" }];
+  const savedCookies = [{ name: "token", value: "access" }, { name: "refresh_token", value: "refresh" }];
+
+  assert.equal(shouldRestoreStorageStateCookies(guestCookies, savedCookies), true);
+  assert.equal(shouldRestoreStorageStateCookies([{ name: "token", value: "current" }], savedCookies), false);
+  assert.equal(shouldRestoreStorageStateCookies(guestCookies, [{ name: "locale", value: "en-US" }]), false);
+});
+
+test("Playwright refresh token: prefers session, then localStorage, then cookie (OTP fallback)", () => {
+  assert.equal(pickRefreshToken("session", "local", "cookie"), "session");
+  assert.equal(pickRefreshToken(undefined, "local", "cookie"), "local");
+  assert.equal(pickRefreshToken(undefined, undefined, "cookie"), "cookie");
+  assert.equal(pickRefreshToken(undefined, "", undefined), undefined);
 });
 
 test("Playwright already-closed error detection", () => {

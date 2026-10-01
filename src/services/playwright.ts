@@ -284,6 +284,34 @@ export function loadStorageState(accountId: string): string | undefined {
   }
 }
 
+/**
+ * AWE: resolve the refresh token in priority order. Imported OTP sessions only
+ * carry the refresh_token cookie, so the cookie is a required fallback for
+ * passwordless accounts that cannot fall back to a password login.
+ */
+export function pickRefreshToken(
+  sessionToken: string | undefined,
+  localStorageToken: string | undefined,
+  cookieToken: string | undefined,
+): string | undefined {
+  return sessionToken || localStorageToken || cookieToken || undefined;
+}
+
+/**
+ * AWE: restore a saved storage state whenever the live profile has no auth
+ * token yet. A freshly created persistent profile often already carries guest
+ * or locale cookies, so `currentCookies.length === 0` misses imported OTP
+ * sessions and the captured token never reaches the context.
+ */
+export function shouldRestoreStorageStateCookies(
+  currentCookies: Array<{ name?: string; value?: string }>,
+  savedCookies: Array<{ name?: string; value?: string }>,
+): boolean {
+  const hasCurrentToken = currentCookies.some((cookie) => cookie.name === "token" && Boolean(cookie.value));
+  const hasSavedToken = savedCookies.some((cookie) => cookie.name === "token" && Boolean(cookie.value));
+  return !hasCurrentToken && hasSavedToken;
+}
+
 export async function saveStorageState(
   context: BrowserContext,
   accountId: string,
@@ -1647,7 +1675,7 @@ export async function initPlaywrightForAccount(
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed.cookies) && parsed.cookies.length > 0) {
             const currentCookies = await acctContext.cookies();
-            if (currentCookies.length === 0) {
+            if (shouldRestoreStorageStateCookies(currentCookies, parsed.cookies)) {
               await acctContext.addCookies(parsed.cookies).catch(() => {});
             }
           }
@@ -1910,7 +1938,7 @@ export async function validateAccountLogin(
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed.cookies) && parsed.cookies.length > 0) {
             const currentCookies = await acctContext.cookies();
-            if (currentCookies.length === 0) {
+            if (shouldRestoreStorageStateCookies(currentCookies, parsed.cookies)) {
               await acctContext.addCookies(parsed.cookies).catch(() => {});
             }
           }
@@ -2703,18 +2731,24 @@ export async function refreshAccountToken(
     return { success: false, error: "Account page not active" };
   }
 
-  // 1. Get refresh token from SQLite session or localStorage
+  // 1. Get refresh token from SQLite session, browser localStorage, or the
+  // Qwen refresh_token cookie. Imported OTP sessions only carry the cookie, so
+  // without this fallback the short-lived token can never be renewed.
   const { getValidAuthSession, saveAuthSession } = await import("../core/database.ts");
   const session = getValidAuthSession(accountId);
-  let refreshToken = session?.refreshToken;
-
-  if (!refreshToken) {
-    try {
-      refreshToken =
-        (await page.evaluate(() => localStorage.getItem("refresh_token") || "")) ||
-        undefined;
-    } catch {}
-  }
+  let localStorageToken: string | undefined;
+  try {
+    localStorageToken =
+      (await page.evaluate(() => localStorage.getItem("refresh_token") || "")) || undefined;
+  } catch {}
+  let cookieToken: string | undefined;
+  try {
+    const cookies = await page.context().cookies();
+    cookieToken =
+      cookies.find((cookie) => cookie.name === "refresh_token" && cookie.value)?.value ||
+      undefined;
+  } catch {}
+  const refreshToken = pickRefreshToken(session?.refreshToken, localStorageToken, cookieToken);
 
   // 2. If we have a refresh token, invoke the working refresh endpoint in-page
   if (refreshToken) {
