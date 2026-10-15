@@ -166,7 +166,7 @@ export function buildChromiumLaunchArgs(viewport: {
 const ACCOUNT_MUTEX_MAX_HOLD_MS = 180_000;
 const accountMutexes = new Map<string, Mutex>();
 
-function getAccountMutex(accountId: string): Mutex {
+export function getAccountMutex(accountId: string): Mutex {
   let mutex = accountMutexes.get(accountId);
   if (!mutex) {
     mutex = new Mutex(`playwright:${accountId.substring(0, 8)}`, ACCOUNT_MUTEX_MAX_HOLD_MS);
@@ -189,15 +189,20 @@ async function recoverStuckAccountMutex(
   const lockState = mutex.state();
   // A lock is only considered stuck if it has been held for at least PLAYWRIGHT_MUTEX_WAIT_MS (60s).
   // A waiter with a short timeout (e.g. 5s) timing out does NOT mean the lock holder is stuck!
-  // Furthermore, never nuke an account while it is initializing (init: takes 20-30s)
-  // or while it is actively serving a stream to a user.
+  // Furthermore, never nuke an account while it is initializing (init: takes 20-30s),
+  // capturing/refreshing headers (headers/refresh can take up to HEADERS_TIMEOUT),
+  // running page operations, or while it is actively serving a stream to a user.
+  const minLockTimeout = Math.max(PLAYWRIGHT_MUTEX_WAIT_MS, config.timeouts.headers);
   if (
-    lockState.heldForMs < PLAYWRIGHT_MUTEX_WAIT_MS ||
+    lockState.heldForMs < minLockTimeout ||
     lockState.heldBy.startsWith("init:") ||
+    lockState.heldBy.startsWith("headers:") ||
+    lockState.heldBy.startsWith("refresh:") ||
+    lockState.heldBy.startsWith("profile-reset:") ||
     isAccountServingStream(accountId)
   ) {
     logger.warn(
-      `[Playwright] Skipping destructive mutex recovery | account=${accountId} | heldBy=${lockState.heldBy} | heldFor=${lockState.heldForMs}ms | limit=${PLAYWRIGHT_MUTEX_WAIT_MS}ms | servingStream=${isAccountServingStream(accountId)}`,
+      `[Playwright] Skipping destructive mutex recovery | account=${accountId} | heldBy=${lockState.heldBy} | heldFor=${lockState.heldForMs}ms | limit=${minLockTimeout}ms | servingStream=${isAccountServingStream(accountId)}`,
     );
     return;
   }
@@ -1246,6 +1251,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
   const release = await acquireAccountMutex(
     accountId,
     `headers:${accountId.substring(0, 12)}`,
+    Math.max(PLAYWRIGHT_MUTEX_WAIT_MS, config.timeouts.headers + 30_000),
   );
   try {
     touchAccountActivity(accountId);
@@ -1369,8 +1375,10 @@ export async function getBasicHeaders(accountId: string): Promise<{
 
     // Refresh headers if stale. A valid cached set remains usable when a
     // browser recapture transiently fails; a cold/partial cache must fail.
+    let refreshedInThisCall = false;
     if (headersAge > HEADER_CACHE_TTL && !cache.refreshInProgress) {
       try {
+        refreshedInThisCall = true;
         await refreshHeadersInternal(accountId);
       } catch (error) {
         if (!hadUsableHeaders) throw error;
@@ -1443,7 +1451,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
       } catch {}
     }
 
-    if (!hasRequiredQwenHeaders(cache.headers)) {
+    if (!hasRequiredQwenHeaders(cache.headers) && !refreshedInThisCall) {
       console.log(
         `🔄 [Playwright] Missing required anti-bot headers for ${accountId}, triggering header interception...`,
       );

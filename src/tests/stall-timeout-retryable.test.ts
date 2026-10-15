@@ -74,3 +74,22 @@ test("stall: header timeout surfaces as retryable UpstreamError, not 500 Interna
   assert.ok(classified instanceof UpstreamError, "must not be InternalError (500)");
   assert.ok(!(classified instanceof InternalError));
 });
+
+test("stall: browser stream ended before response headers is treated as network-like error", () => {
+  assert.strictEqual(
+    isNetworkLikeError(
+      new Error(
+        "Browser Qwen stream ended before response headers after 90000ms",
+      ),
+    ),
+    true,
+  );
+  assert.strictEqual(
+    isNetworkLikeError(
+      new Error(
+        "Qwen browser stream timed out waiting for response headers after 70000ms",
+      ),
+    ),
+    true,
+  );
+});

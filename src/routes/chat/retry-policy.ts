@@ -390,7 +390,9 @@ export function isNetworkLikeError(err: unknown): boolean {
     message.includes("socket hang up") ||
     message.includes("econnreset") ||
     message.includes("econnrefused") ||
-    message.includes("etimedout")
+    message.includes("etimedout") ||
+    message.includes("stream ended before response headers") ||
+    message.includes("timed out waiting for response headers")
   );
 }
 

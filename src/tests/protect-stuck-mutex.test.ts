@@ -48,3 +48,33 @@ test("recoverStuckAccountMutex does not destroy context when lock holder is belo
   // Cleanup
   unregisterPlaywrightAccountForTests(accountId);
 });
+
+test("recoverStuckAccountMutex exempts headers and refresh holders from destructive reset", async () => {
+  const accountId = "test-protect-headers-" + Date.now();
+  const mockPage = { isClosed: () => false };
+  registerPlaywrightAccountForTests(accountId, mockPage as any, Date.now());
+
+  const { getAccountMutex } = await import("../services/playwright.ts");
+  const mutex = getAccountMutex(accountId);
+  // Acquire with headers: key
+  const releaseHeaders = await mutex.acquire(
+    10_000,
+    `headers:${accountId.substring(0, 12)}`,
+  );
+
+  // Second acquire with page: key times out after 50ms and requests recovery
+  await assert.rejects(
+    () => withAccountPage(accountId, async () => {}, 50, 50, true),
+    (err: any) => err.message.includes("acquire timeout"),
+  );
+
+  // Account must NOT have been destroyed because headers: is exempt from destructive recovery
+  assert.strictEqual(
+    isPlaywrightInitialized(accountId),
+    true,
+    "Headers/refresh mutex holder must not trigger destructive context reset",
+  );
+
+  releaseHeaders();
+  unregisterPlaywrightAccountForTests(accountId);
+});

@@ -818,7 +818,7 @@ async function withQwenBrowserPage<T>(
       return fn(page);
     },
     operationTimeoutMs,
-    Math.min(config.timeouts.page, 30_000),
+    Math.max(60_000, operationTimeoutMs),
     recoverOnTimeout,
   );
 }
