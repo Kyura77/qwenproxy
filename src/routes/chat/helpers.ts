@@ -231,8 +231,13 @@ export function applyUpstreamUsage(
   if (!candidate || typeof candidate !== "object") return;
 
   const usage = candidate as Record<string, unknown>;
-  const promptTokens = asFiniteNumber(usage.input_tokens);
-  const completionTokens = asFiniteNumber(usage.output_tokens);
+  // Qwen streams report usage as {input_tokens,output_tokens}; OpenAI-compatible
+  // upstreams report {prompt_tokens,completion_tokens}. Accept both shapes so the
+  // real measured counts are never silently dropped to 0.
+  const promptTokens =
+    asFiniteNumber(usage.input_tokens) ?? asFiniteNumber(usage.prompt_tokens);
+  const completionTokens =
+    asFiniteNumber(usage.output_tokens) ?? asFiniteNumber(usage.completion_tokens);
   const totalTokens = asFiniteNumber(usage.total_tokens);
 
   if (promptTokens !== null) {

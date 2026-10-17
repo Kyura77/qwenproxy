@@ -34,6 +34,10 @@ import type { Message, OpenAIRequest, Usage } from "../../utils/types.ts";
 import { touchChatLock } from "./account.ts";
 import { StreamingToolParser } from "../../tools/parser.ts";
 import {
+  decideMissingToolCallRetry,
+  type MissingToolCallReason,
+} from "../../tools/tool-call-heuristics.ts";
+import {
   getStream,
   markStreamEmitted,
   registerStream,
@@ -609,10 +613,22 @@ export async function processNonStreamingResponse(
 
     const finishReason = toolCallsOut.length ? "tool_calls" : "stop";
 
-    // Auto-retry if all tool calls were malformed (no successful tool calls)
-    const allToolsFailed = toolParser && toolParser.getMalformedToolCalls().length > 0 && toolCallsOut.length === 0;
+    // Auto-retry when no usable tool call was produced: either every emitted
+    // block was malformed, OR the model emitted no tool block at all while
+    // tools were declared (the "Tool X does not exists." stall).
+    const retryDecision = toolParser
+      ? decideMissingToolCallRetry({
+          declaredToolCount: declaredTools.length,
+          successfulToolCallCount: toolParser.getSuccessfulToolCallCount(),
+          malformedToolCallCount: toolParser.getMalformedToolCalls().length,
+          emittedToolCallCount: toolParser.getEmittedToolCallCount(),
+          text: finalContent,
+        })
+      : { retry: false, reason: null as MissingToolCallReason };
+    const allToolsFailed = retryDecision.retry;
     const malformedRetryCount = midStreamRetry?.malformedRetryCount ?? 0;
     if (
+      toolParser &&
       allToolsFailed &&
       config.retry.autoRetryMalformedTools !== false &&
       midStreamRetry &&
@@ -634,7 +650,9 @@ export async function processNonStreamingResponse(
         : "";
 
       let errorMessage: string;
-      if (undeclaredNames.length > 0) {
+      if (retryDecision.reason === "no_call") {
+        errorMessage = `You did not emit any tool call. Respond with a single tool-call block using one of the declared tools.${toolsHint}`;
+      } else if (undeclaredNames.length > 0) {
         errorMessage = `Your previous ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}`;
       } else {
         const previews = malformedCalls
@@ -644,7 +662,8 @@ export async function processNonStreamingResponse(
         errorMessage = `Your previous ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or truncated. Please retry with valid JSON.\n\nFailed attempt(s):\n  - ${previews}${toolsHint}`;
       }
       if (isToolcallDebugEnabled()) {
-        logger.debug("[chat] non-stream: auto-retrying malformed tool calls", {
+        logger.debug("[chat] non-stream: auto-retrying tool call recovery", {
+          reason: retryDecision.reason,
           malformedCount,
           undeclaredNames,
           completionId,
@@ -719,7 +738,7 @@ export async function processNonStreamingResponse(
         );
       }
 
-      console.log(`🔄 [Chat] Auto-retry (${malformedRetryCount + 1}/${config.retry.autoRetryMalformedToolsMax}) | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)} | reason=malformed_tool_calls`);
+      console.log(`🔄 [Chat] Auto-retry (${malformedRetryCount + 1}/${config.retry.autoRetryMalformedToolsMax}) | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)} | reason=${retryDecision.reason === "no_call" ? "missing_tool_call" : "malformed_tool_calls"}`);
 
       // Process the new stream. Propagate the retry context with an incremented
       // counter so a subsequent malformed response can retry again up to
@@ -2164,9 +2183,14 @@ export async function processStreamingResponse(
 
         while (malformedRetryCount < maxMalformedRetries) {
           if (!toolParser) break;
-          const allToolsFailed =
-            toolParser.getMalformedToolCalls().length > 0 &&
-            toolParser.getSuccessfulToolCallCount() === 0;
+          const retryDecision = decideMissingToolCallRetry({
+            declaredToolCount: declaredTools.length,
+            successfulToolCallCount: toolParser.getSuccessfulToolCallCount(),
+            malformedToolCallCount: toolParser.getMalformedToolCalls().length,
+            emittedToolCallCount: toolParser.getEmittedToolCallCount(),
+            text: finalContent,
+          });
+          const allToolsFailed = retryDecision.retry;
           if (!allToolsFailed) break;
 
           const malformedCalls = toolParser.getMalformedToolCalls();
@@ -2185,7 +2209,9 @@ export async function processStreamingResponse(
               : "";
 
           let errorMessage: string;
-          if (undeclaredNames.length > 0) {
+          if (retryDecision.reason === "no_call") {
+            errorMessage = `You did not emit any tool call. Respond with a single tool-call block using one of the declared tools.${toolsHint}`;
+          } else if (undeclaredNames.length > 0) {
             errorMessage = `Your previous ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}`;
           } else {
             const previews = malformedCalls
@@ -2195,7 +2221,8 @@ export async function processStreamingResponse(
             errorMessage = `Your previous ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or truncated. Please retry with valid JSON.\n\nFailed attempt(s):\n  - ${previews}${toolsHint}`;
           }
           if (isToolcallDebugEnabled()) {
-            logger.debug("[chat] stream: auto-retrying malformed tool calls", {
+            logger.debug("[chat] stream: auto-retrying tool call recovery", {
+              reason: retryDecision.reason,
               malformedCount,
               undeclaredNames,
               completionId,
@@ -2270,7 +2297,7 @@ export async function processStreamingResponse(
           }
 
           console.log(
-            `🔄 [Chat] Auto-retry (${malformedRetryCount + 1}/${maxMalformedRetries}) | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)} | reason=malformed_tool_calls`,
+            `🔄 [Chat] Auto-retry (${malformedRetryCount + 1}/${maxMalformedRetries}) | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)} | reason=${retryDecision.reason === "no_call" ? "missing_tool_call" : "malformed_tool_calls"}`,
           );
 
           // Transfer the retry's stream registry entry to the original

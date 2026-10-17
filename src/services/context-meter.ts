@@ -174,8 +174,15 @@ export function buildContextMeterSnapshot(
 
 /**
  * Add the diagnostic extension without changing standard OpenAI usage by
- * default. If reportUsage is enabled, prompt_tokens uses Qwen's measured
- * input_tokens when available and falls back to the local estimate otherwise.
+ * default. When reportUsage is enabled, prompt_tokens is only ever set from a
+ * REAL measurement (Qwen's input_tokens / OpenAI prompt_tokens). If no real
+ * measurement is available, the local heuristic estimate is exposed solely via
+ * the `context_meter.estimatedContextTokens` extension and standard
+ * `prompt_tokens` is left untouched — never fabricated from the estimate.
+ *
+ * Fabricating from the estimate caused reported token counts to move
+ * backwards between turns (real ~hundreds of thousands → estimate a few
+ * thousand) whenever an upstream turn omitted usage.
  */
 export function enrichUsageWithContextMeter(
   usage: Usage,
@@ -189,7 +196,7 @@ export function enrichUsageWithContextMeter(
       ? usage.prompt_tokens
       : null;
   const reportedPromptTokens = options.reportUsage
-    ? (upstreamPromptTokens ?? snapshot.estimatedContextTokens)
+    ? (upstreamPromptTokens ?? usage.prompt_tokens)
     : usage.prompt_tokens;
   const contextMeter: ContextMeterSnapshot = {
     ...snapshot,

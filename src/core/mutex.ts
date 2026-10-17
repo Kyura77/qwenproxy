@@ -14,6 +14,12 @@ export class Mutex {
   private locked = false;
   private lockedAt = 0;
   private lockedByKey = "";
+  /**
+   * Bumped whenever the lock is force-released (stale recovery). Handles
+   * created before the bump become inert, so a late release() from the
+   * evicted holder can never clear or hand off the lock the new holder owns.
+   */
+  private epoch = 0;
 
   constructor(
     public readonly name: string = "unnamed",
@@ -35,6 +41,9 @@ export class Mutex {
       this.locked = false;
       this.lockedAt = 0;
       this.lockedByKey = "";
+      // Invalidate the evicted holder's release handle: it must not be able to
+      // release the lock we are about to (re)grant to someone else.
+      this.epoch++;
     }
 
     if (!this.locked) {
@@ -78,10 +87,15 @@ export class Mutex {
   }
 
   private createRelease(): () => void {
+    const epoch = this.epoch;
     let released = false;
     return () => {
       if (released) return;
       released = true;
+      // Stale handle (lock was force-released since acquisition): do nothing,
+      // otherwise this late release would clear the current holder's lock and
+      // allow a second waiter to acquire it concurrently (double-grant).
+      if (epoch !== this.epoch) return;
       this.release();
     };
   }

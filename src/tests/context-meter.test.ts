@@ -135,7 +135,7 @@ test("reportUsage can expose effective history usage while retaining upstream us
   );
 });
 
-test("reportUsage falls back explicitly to a local estimate when Qwen sends no usage", () => {
+test("reportUsage does NOT fabricate prompt_tokens from the local estimate when Qwen sends no usage", () => {
   const snapshot = buildContextMeterSnapshot(
     {
       modelId: "qwen3.7-plus",
@@ -153,6 +153,11 @@ test("reportUsage falls back explicitly to a local estimate when Qwen sends no u
     { ...enabledOptions, reportUsage: true },
   );
 
-  assert.equal(usage.prompt_tokens, snapshot.estimatedContextTokens);
+  // The heuristic estimate must NOT be written into standard prompt_tokens:
+  // doing so made reported counts jump backwards between turns. It stays
+  // available (non-authoritative) via the context_meter extension instead.
+  assert.equal(usage.prompt_tokens, 0);
+  assert.equal((usage as any).context_meter.reportedPromptTokens, 0);
+  assert.ok((usage as any).context_meter.estimatedContextTokens > 0);
   assert.equal((usage as any).context_meter.measurementSource, "local_estimate");
 });
