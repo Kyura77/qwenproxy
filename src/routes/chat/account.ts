@@ -1131,9 +1131,11 @@ async function tryCreateStreamWithRetry(
 				accountLease = quick;
 			} else {
 				accountLease = await acquireAccountLease(currentAccountId, {
-					timeoutMs: waitQueueForever
-						? config.concurrency.queueWaitForeverCapMs
-						: config.concurrency.busyWaitMs,
+					timeoutMs: heldByOtherSession
+						? 10_000
+						: waitQueueForever
+							? config.concurrency.queueWaitForeverCapMs
+							: config.concurrency.busyWaitMs,
 					signal: combinedSignal,
 					label: sessionLabel,
 					leaseAbortController: leaseAbort,
@@ -1348,7 +1350,7 @@ async function tryCreateStreamWithRetry(
 					modelId: params.contextModelId ?? params.model,
 					accountId: currentAccountId,
 					requestPrompt: promptForUpstream,
-					fullPrompt: params.fullPrompt,
+					fullPrompt: effectivePrompt,
 					mode:
 						params.contextMode ??
 						(params.forceNewChat
