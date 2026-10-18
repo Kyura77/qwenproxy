@@ -1130,12 +1130,21 @@ async function tryCreateStreamWithRetry(
 				}
 				accountLease = quick;
 			} else {
+				// Timeout strategy:
+				// - heldByOtherSession: 10s (fail fast, rotate to another account)
+				// - waitQueueForever: 120s (thread owner waiting for own slot)
+				// - busyWaitMs: 30s (normal wait)
+				// - No alternatives: 5s (fail fast, let client decide)
+				const timeoutMs = heldByOtherSession
+					? 10_000
+					: waitQueueForever
+						? config.concurrency.queueWaitForeverCapMs
+						: hasFreeAlt
+							? config.concurrency.busyWaitMs
+							: 5_000;
+
 				accountLease = await acquireAccountLease(currentAccountId, {
-					timeoutMs: heldByOtherSession
-						? 10_000
-						: waitQueueForever
-							? config.concurrency.queueWaitForeverCapMs
-							: config.concurrency.busyWaitMs,
+					timeoutMs,
 					signal: combinedSignal,
 					label: sessionLabel,
 					leaseAbortController: leaseAbort,
