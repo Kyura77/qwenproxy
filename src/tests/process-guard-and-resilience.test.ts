@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import {
   isBenignTeardownError,
   isPlaywrightAlreadyClosedMessage,
+  isBenignDriverIoError,
+  evaluateTeardownBurst,
+  TEARDOWN_BURST_WINDOW_MS,
+  TEARDOWN_BURST_THRESHOLD,
 } from "../core/process-guard.ts";
 import { config } from "../core/config.ts";
 import {
@@ -32,6 +36,55 @@ test("process-guard: correctly identifies benign Playwright CDP closure errors",
 
   const realAppError = new Error("TypeError: Cannot read property of undefined");
   assert.equal(isBenignTeardownError(realAppError), false);
+});
+
+test("process-guard: treats a dead-browser EIO/EPIPE write as benign driver I/O", () => {
+  const eio = { errno: -5, code: "EIO", syscall: "write" };
+  const epipe = { errno: -32, code: "EPIPE", syscall: "write" };
+  const econnreset = { errno: -104, code: "ECONNRESET", syscall: "read" };
+  const byMessage = new Error("write EPIPE: broken pipe");
+
+  assert.equal(isBenignDriverIoError(eio), true);
+  assert.equal(isBenignDriverIoError(epipe), true);
+  assert.equal(isBenignDriverIoError(econnreset), true);
+  assert.equal(isBenignDriverIoError(byMessage), true);
+
+  // These are the exact objects the runaway Playwright loop emitted.
+  assert.equal(isBenignTeardownError(eio), true);
+  assert.equal(isBenignTeardownError({ errno: -5, code: "EIO", syscall: "write" }), true);
+
+  // Real application failures and unrelated error codes must NOT be swallowed.
+  assert.equal(isBenignDriverIoError({ code: "ENOENT", syscall: "open" }), false);
+  assert.equal(isBenignDriverIoError(new Error("TypeError: x is not a function")), false);
+  assert.equal(isBenignDriverIoError(null), false);
+  assert.equal(isBenignTeardownError({ code: "ENOENT", syscall: "open" }), false);
+});
+
+test("process-guard: recycles the process only after a runaway teardown burst", () => {
+  const now = 1_000_000;
+
+  // A healthy single event is absorbed, not fatal.
+  assert.deepEqual(evaluateTeardownBurst([now - 10], now), {
+    recent: 1,
+    shouldExit: false,
+  });
+
+  // Just under threshold within the window: still absorb.
+  const under = Array.from({ length: TEARDOWN_BURST_THRESHOLD - 1 }, (_, i) => now - i);
+  assert.equal(evaluateTeardownBurst(under, now).shouldExit, false);
+
+  // At/over threshold within the window: the loop is runaway → exit.
+  const over = Array.from({ length: TEARDOWN_BURST_THRESHOLD }, (_, i) => now - i);
+  const decision = evaluateTeardownBurst(over, now);
+  assert.equal(decision.recent, TEARDOWN_BURST_THRESHOLD);
+  assert.equal(decision.shouldExit, true);
+
+  // Old timestamps outside the window are pruned, so a slow trickle never trips.
+  const stale = Array.from(
+    { length: TEARDOWN_BURST_THRESHOLD * 2 },
+    (_, i) => now - TEARDOWN_BURST_WINDOW_MS - (i + 1),
+  );
+  assert.equal(evaluateTeardownBurst(stale, now).shouldExit, false);
 });
 
 test("config: reasoning model timeout defaults to 300,000ms (5 minutes)", () => {
