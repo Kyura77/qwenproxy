@@ -106,9 +106,6 @@ export function isAccountSlotHeldByOtherSession(
   const slot = slots.get(accountId);
   if (!slot) return false;
   if (slot.activeLeases.length === 0) return false;
-  if (slot.activeLeases.length < config.concurrency.maxStreamsPerAccount) {
-    return false;
-  }
   return slot.activeLeases.every((l) => l.label !== label);
 }
 
@@ -167,7 +164,7 @@ function releaseSlot(accountId: string): void {
   if (!slot) return;
 
   // Deliver to the next waiter in FIFO order
-  while (slot.queue.length > 0 && slot.activeLeases.length < config.concurrency.maxStreamsPerAccount) {
+  while (slot.queue.length > 0) {
     const entry = slot.queue.shift();
     if (!entry) break;
     cleanupEntry(entry);
@@ -250,15 +247,12 @@ export function tryAcquireAccountLease(
 ): AccountLease | null {
   const slot = getSlot(accountId);
   sweepStaleLeases(accountId);
-  if (slot.activeLeases.length < config.concurrency.maxStreamsPerAccount) {
-    return createLease(
-      accountId,
-      label ?? "try-acquire",
-      leaseAbortController,
-      parallelEscape,
-    );
-  }
-  return null;
+  return createLease(
+    accountId,
+    label ?? "try-acquire",
+    leaseAbortController,
+    parallelEscape,
+  );
 }
 
 /**
@@ -304,10 +298,8 @@ export function acquireAccountLease(
     releaseSlot(accountId); // deliver to the earliest waiter, if any
   }
 
-  // Fast path: capacity available
-  if (slot.activeLeases.length < config.concurrency.maxStreamsPerAccount) {
-    return Promise.resolve(createLease(accountId, label, options?.leaseAbortController));
-  }
+  // No capacity limit - always grant immediately
+  return Promise.resolve(createLease(accountId, label, options?.leaseAbortController));
 
   const hasExplicitTimeout =
     options != null &&
@@ -522,11 +514,10 @@ export function markLeaseCompletion(
 
 /**
  * Check whether an account currently has no free slots.
+ * With unlimited streams, this always returns false.
  */
 export function isAccountBusy(accountId: string): boolean {
-  const slot = slots.get(accountId);
-  if (!slot) return false;
-  return slot.activeLeases.length >= config.concurrency.maxStreamsPerAccount;
+  return false;
 }
 
 /**
@@ -605,7 +596,7 @@ export function getAccountConcurrencySnapshot(): Array<{
       accountId,
       active: slot.activeLeases.length,
       waiting: slot.queue.length,
-      limit: config.concurrency.maxStreamsPerAccount,
+      limit: Infinity,
       holders: slot.activeLeases.map((l) => ({
         label: l.label,
         heldMs: now - l.acquiredAt,

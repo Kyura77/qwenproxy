@@ -14,7 +14,7 @@
  * ends its turn, and the loop stalls until a human nudges it ("continue").
  */
 
-export type MissingToolCallReason = "malformed" | "no_call" | null;
+export type MissingToolCallReason = "malformed" | "no_call" | "json_in_text" | null;
 
 export interface MissingToolCallInput {
   /** Number of tool definitions declared on the request. */
@@ -46,6 +46,27 @@ export function isToolHesitationText(text: string): boolean {
   );
 }
 
+/**
+ * Detects when the model dumped a raw tool-call JSON payload as prose instead
+ * of emitting it as a structured tool call. The parser already strips proper
+ * `<tool_call>...</tool_call>` blocks, so any JSON that still reaches the
+ * visible `text` is a hallucinated tool-call-as-prose.
+ *
+ * Matches both shapes observed in the wild:
+ *   {"name":"read","arguments":{...}}
+ *   {"name":"read","arguments":{"i":"...","path":"..."}}
+ *
+ * Also catches a stray `</tool_call>` tag that leaked into prose (the parser
+ * would have consumed the matching open tag, leaving the close orphaned).
+ */
+export function isRawToolCallJsonInText(text: string): boolean {
+  if (!text) return false;
+  const hasToolCallJson =
+    /\{\s*"name"\s*:\s*"[a-zA-Z_][a-zA-Z0-9_]*"\s*,\s*"arguments"\s*:\s*\{/i.test(text);
+  const hasStrayCloseTag = /<\/tool_call>/.test(text);
+  return hasToolCallJson || hasStrayCloseTag;
+}
+
 export function decideMissingToolCallRetry(
   input: MissingToolCallInput,
 ): MissingToolCallDecision {
@@ -70,6 +91,14 @@ export function decideMissingToolCallRetry(
   // talked about tools as missing (the "does not exists" case).
   if (emittedToolCallCount === 0 && isToolHesitationText(text)) {
     return { retry: true, reason: "no_call" };
+  }
+
+  // New behaviour: model dumped a raw tool-call JSON as prose (visible in the
+  // assistant text instead of being emitted as a structured tool call).
+  // The parser strips proper `<tool_call>...</tool_call>` blocks, so any JSON
+  // reaching the visible text is a hallucinated tool-call-as-prose.
+  if (isRawToolCallJsonInText(text)) {
+    return { retry: true, reason: "json_in_text" };
   }
 
   return { retry: false, reason: null };

@@ -15,7 +15,7 @@ import {
   resetAccountConcurrencyForTests,
 } from "../core/account-concurrency.ts";
 
-// config.concurrency.maxStreamsPerAccount defaults to 1 in test mode
+// Streams are unlimited per account - no capacity limit
 
 test("AccountConcurrency: first lease is acquired immediately", async () => {
   resetAccountConcurrencyForTests();
@@ -24,31 +24,21 @@ test("AccountConcurrency: first lease is acquired immediately", async () => {
   lease.release();
 });
 
-test("AccountConcurrency: second lease waits until first is released", async () => {
+test("AccountConcurrency: multiple leases acquired immediately (unlimited streams)", async () => {
   resetAccountConcurrencyForTests();
   const lease1 = await acquireAccountLease("acc-1");
-  assert.strictEqual(isAccountBusy("acc-1"), true);
-
-  let resolved = false;
-  const lease2Promise = acquireAccountLease("acc-1", { timeoutMs: 5000 }).then(
-    (lease) => {
-      resolved = true;
-      return lease;
-    },
-  );
-
-  // Give the event loop a tick — should still be waiting
-  await new Promise((r) => setTimeout(r, 10));
-  assert.strictEqual(resolved, false);
-
+  const lease2 = await acquireAccountLease("acc-1");
+  const lease3 = await acquireAccountLease("acc-1");
+  
+  // All leases should be acquired immediately
+  assert.strictEqual(isAccountBusy("acc-1"), false);
+  
   lease1.release();
-  const lease2 = await lease2Promise;
-  assert.strictEqual(resolved, true);
-  assert.strictEqual(lease2.accountId, "acc-1");
   lease2.release();
+  lease3.release();
 });
 
-test("AccountConcurrency: slot at capacity held by another session is detected", async () => {
+test("AccountConcurrency: slot held by another session is detected", async () => {
   resetAccountConcurrencyForTests();
   const leaseA = await acquireAccountLease("acc-cross-session", {
     label: "sess-A",
@@ -78,22 +68,19 @@ test("AccountConcurrency: slot at capacity held by another session is detected",
   );
 });
 
-test("AccountConcurrency: unknown account / partial capacity is not held by other", async () => {
+test("AccountConcurrency: unknown account is not held by other", async () => {
   resetAccountConcurrencyForTests();
   assert.strictEqual(
     isAccountSlotHeldByOtherSession("acc-nonexistent", "sess-X"),
     false,
   );
 
-  // Below capacity: capacity is free even though a lease is active.
-  // With the default maxStreamsPerAccount=1 a single active lease fills the
-  // slot, so sess-Y is treated as "held by other" (capacity full). The
-  // important guard is the label comparison below, not the capacity math.
+  // With unlimited streams, active leases don't block other sessions
   const lease = await acquireAccountLease("acc-partial");
   assert.strictEqual(
     isAccountSlotHeldByOtherSession("acc-partial", "sess-Y"),
     true,
-    "capacity full with an active lease counts as held by another session",
+    "active lease counts as held by another session (label comparison)",
   );
   lease.release();
   assert.strictEqual(
@@ -134,36 +121,28 @@ test("AccountConcurrency: timeout removes waiter and rejects", async () => {
   resetAccountConcurrencyForTests();
   const lease1 = await acquireAccountLease("acc-timeout");
 
-  await assert.rejects(
-    () => acquireAccountLease("acc-timeout", { timeoutMs: 50 }),
-    /timed out after 50ms/,
-  );
+  // With unlimited streams, leases are granted immediately - no timeout
+  const lease2 = await acquireAccountLease("acc-timeout", { timeoutMs: 50 });
+  assert.ok(lease2);
 
-  // Original lease still valid
-  assert.strictEqual(isAccountBusy("acc-timeout"), true);
+  // Original leases still valid
+  assert.strictEqual(isAccountBusy("acc-timeout"), false);
   lease1.release();
+  lease2.release();
   assert.strictEqual(isAccountBusy("acc-timeout"), false);
 });
 
-test("AccountConcurrency: null timeoutMs waits until slot frees (lossless queue)", async () => {
+test("AccountConcurrency: null timeoutMs grants immediately (unlimited streams)", async () => {
   resetAccountConcurrencyForTests();
   const lease1 = await acquireAccountLease("acc-null-timeout");
 
-  let resolved = false;
-  const waiter = acquireAccountLease("acc-null-timeout", {
+  // With unlimited streams, the second lease is granted immediately
+  const lease2 = await acquireAccountLease("acc-null-timeout", {
     timeoutMs: null,
-  }).then((lease) => {
-    resolved = true;
-    return lease;
   });
-
-  // Must NOT reject on its own: the lease stays queued for the whole wait.
-  await new Promise((r) => setTimeout(r, 60));
-  assert.strictEqual(resolved, false);
+  assert.ok(lease2);
 
   lease1.release();
-  const lease2 = await waiter;
-  assert.strictEqual(resolved, true);
   lease2.release();
 });
 
@@ -172,17 +151,15 @@ test("AccountConcurrency: abort signal removes waiter and rejects", async () => 
   const lease1 = await acquireAccountLease("acc-abort");
   const controller = new AbortController();
 
-  const promise = acquireAccountLease("acc-abort", {
+  // With unlimited streams, leases are granted immediately - no abort needed
+  const lease2 = await acquireAccountLease("acc-abort", {
     timeoutMs: 10000,
     signal: controller.signal,
   });
-
-  await new Promise((r) => setTimeout(r, 10));
-  controller.abort();
-
-  await assert.rejects(() => promise, /Aborted while waiting/);
+  assert.ok(lease2);
 
   lease1.release();
+  lease2.release();
 });
 
 test("AccountConcurrency: already-aborted signal rejects immediately", async () => {
@@ -209,45 +186,45 @@ test("AccountConcurrency: different accounts do not block each other", async () 
   const leaseA = await acquireAccountLease("acc-a");
   const leaseB = await acquireAccountLease("acc-b");
 
-  assert.strictEqual(isAccountBusy("acc-a"), true);
-  assert.strictEqual(isAccountBusy("acc-b"), true);
+  // With unlimited streams, accounts are never busy
+  assert.strictEqual(isAccountBusy("acc-a"), false);
+  assert.strictEqual(isAccountBusy("acc-b"), false);
 
   leaseA.release();
   assert.strictEqual(isAccountBusy("acc-a"), false);
-  assert.strictEqual(isAccountBusy("acc-b"), true);
+  assert.strictEqual(isAccountBusy("acc-b"), false);
 
   leaseB.release();
 });
 
-test("AccountConcurrency: tryAcquire returns null when busy", async () => {
+test("AccountConcurrency: tryAcquire always succeeds (unlimited streams)", async () => {
   resetAccountConcurrencyForTests();
   const lease = await acquireAccountLease("acc-try");
   const second = tryAcquireAccountLease("acc-try");
-  assert.strictEqual(second, null);
+  assert.ok(second); // With unlimited streams, tryAcquire always succeeds
   lease.release();
+  second!.release();
 
   const third = tryAcquireAccountLease("acc-try");
   assert.ok(third);
   third!.release();
 });
 
-test("AccountConcurrency: snapshot reports active and waiting counts", async () => {
+test("AccountConcurrency: snapshot reports active counts", async () => {
   resetAccountConcurrencyForTests();
   const lease = await acquireAccountLease("acc-snap");
 
-  // Start a waiter
-  const waiterPromise = acquireAccountLease("acc-snap", { timeoutMs: 5000 });
-  await new Promise((r) => setTimeout(r, 10));
+  // With unlimited streams, no waiters queue up
+  const lease2 = await acquireAccountLease("acc-snap", { timeoutMs: 5000 });
 
   const snapshot = getAccountConcurrencySnapshot();
   const entry = snapshot.find((s) => s.accountId === "acc-snap");
   assert.ok(entry);
-  assert.strictEqual(entry!.active, 1);
-  assert.strictEqual(entry!.waiting, 1);
-  assert.strictEqual(entry!.limit, 1);
+  assert.strictEqual(entry!.active, 2);
+  assert.strictEqual(entry!.waiting, 0);
+  assert.strictEqual(entry!.limit, Infinity);
 
   lease.release();
-  const lease2 = await waiterPromise;
   lease2.release();
 });
 

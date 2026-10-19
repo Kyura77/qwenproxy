@@ -603,14 +603,11 @@ export function buildCapturedQwenHeaders(
 }
 
 
-// Per-account stream slots: a counting semaphore capped by
-// config.concurrency.maxStreamsPerAccount (NOT a capacity-1 mutex). The browser
-// relay multiplexes concurrent streams on one page via reqId (browserStreamStates),
-// so serializing to 1 here silently overrode the lease cap and made
-// ACCOUNT_MAX_CONCURRENT_STREAMS>1 unreachable (the second stream queued behind
-// the first's whole generation). FIFO handoff on release keeps the old
-// leak-recovery semantics (release is idempotent; a dropped stream still blocks
-// its slot until cancel/idle-timeout frees it — same as before).
+// Per-account stream slots: tracks active streams per account.
+// Streams are unlimited per account - no capacity cap.
+// FIFO handoff on release keeps the old leak-recovery semantics
+// (release is idempotent; a dropped stream still blocks its slot
+// until cancel/idle-timeout frees it — same as before).
 interface AccountStreamSlots {
   active: number;
   queue: Array<() => void>;
@@ -626,10 +623,6 @@ function getAccountStreamMutex(
     accountStreamMutexes.set(accountId, slots);
   }
   return slots;
-}
-
-function streamSlotCapacity(): number {
-  return Math.max(1, config.concurrency.maxStreamsPerAccount);
 }
 
 function createStreamSlotRelease(slots: AccountStreamSlots): () => void {
@@ -649,13 +642,9 @@ function createStreamSlotRelease(slots: AccountStreamSlots): () => void {
 
 async function acquireAccountStreamLock(accountId: string): Promise<() => void> {
   const slots = getAccountStreamMutex(accountId);
-  if (slots.active < streamSlotCapacity()) {
-    slots.active += 1;
-    return Promise.resolve(createStreamSlotRelease(slots));
-  }
-  return new Promise<() => void>((resolve) => {
-    slots.queue.push(() => resolve(createStreamSlotRelease(slots)));
-  });
+  // No capacity limit - always grant immediately
+  slots.active += 1;
+  return Promise.resolve(createStreamSlotRelease(slots));
 }
 
 const QWEN_SAFE_SETTINGS_PATCH = {
@@ -2749,7 +2738,7 @@ export async function createQwenStream(
   if (signal?.aborted) {
     throw new Error("client aborted before stream creation");
   }
-  // Take a stream slot for the account (up to maxStreamsPerAccount concurrent;
+  // Take a stream slot for the account (unlimited concurrent streams per account;
   // the relay multiplexes them on the page via reqId).
   const streamLockKey = accountId || "global";
   const startedAt = Date.now();

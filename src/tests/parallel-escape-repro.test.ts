@@ -75,7 +75,7 @@ test("ParallelEscape fix: failover selection excludes the STICKY busy account", 
   () => {
     resetAccountConcurrencyForTests();
 
-    // Main non-stream holds the sticky account slot (maxStreamsPerAccount=1).
+    // Main non-stream holds the sticky account lease.
     const main = acquireAccountLease("ldyjl", { label: "sess-main" });
 
     // The parallel escape now converts to effectivePreferred=null and excludes

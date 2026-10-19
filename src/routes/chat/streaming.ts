@@ -652,6 +652,8 @@ export async function processNonStreamingResponse(
       let errorMessage: string;
       if (retryDecision.reason === "no_call") {
         errorMessage = `You did not emit any tool call. Respond with a single tool-call block using one of the declared tools.${toolsHint}`;
+      } else if (retryDecision.reason === "json_in_text") {
+        errorMessage = `You emitted a tool call as raw JSON in your response text instead of using a proper tool-call block. The JSON was treated as prose and not executed. Please retry with a proper tool-call block.${toolsHint}`;
       } else if (undeclaredNames.length > 0) {
         errorMessage = `Your previous ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}`;
       } else {

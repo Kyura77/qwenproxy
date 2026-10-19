@@ -165,7 +165,7 @@ export async function fetchProxyStatus(): Promise<ProxyStatusSnapshot> {
     return {
       ...acc,
       activeStreams: concurrency?.active ?? 0,
-      streamLimit: concurrency?.limit ?? config.concurrency.maxStreamsPerAccount,
+      streamLimit: Infinity,
       dailyTokens: daily?.completionTokens ?? 0,
       dailyUsagePercent: daily?.usagePercent ?? 0,
       dailyTurns: daily?.turnsCount ?? 0,
