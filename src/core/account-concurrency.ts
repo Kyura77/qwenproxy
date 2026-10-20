@@ -517,7 +517,9 @@ export function markLeaseCompletion(
  * With unlimited streams, this always returns false.
  */
 export function isAccountBusy(accountId: string): boolean {
-  return false;
+  const slot = slots.get(accountId);
+  if (!slot) return false;
+  return slot.activeLeases.length > 0;
 }
 
 /**

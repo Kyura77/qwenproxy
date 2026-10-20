@@ -374,7 +374,7 @@ test("non-stream: valid tool_call becomes structured tool_calls", async () => {
   }
 });
 
-test("non-stream: undeclared tool name in literal example is preserved as text without surfacing a warning", async () => {
+test("non-stream: undeclared tool name is forwarded as a structured tool_call", async () => {
   const literal =
     '<tool_call>{"name":"nome_da_ferramenta","arguments":{"parametro":"valor"}}</tool_call>';
   const restore = setupFetchMock(() =>
@@ -402,17 +402,22 @@ test("non-stream: undeclared tool name in literal example is preserved as text w
 
     const body = await res.json();
     const message = body.choices[0].message;
-    assert.strictEqual(message.tool_calls, undefined);
-    assert.strictEqual(body.choices[0].finish_reason, "stop");
-    // The undeclared call is preserved as literal text. The bridge must NOT
-    // inject its own warning into the user-visible reply — any correction is
-    // sent to Qwen through the auto-retry upstream prompt instead.
+    // A client that defers tools still knows the tool — it just did not
+    // advertise it in this request. The call is forwarded so the client can
+    // execute it or return a proper "unknown tool" error result. Neutering it
+    // into prose left the client with a dead turn.
+    assert.strictEqual(message.tool_calls.length, 1);
+    assert.strictEqual(message.tool_calls[0].function.name, "nome_da_ferramenta");
+    assert.strictEqual(body.choices[0].finish_reason, "tool_calls");
+    // The raw block must not leak into the user-visible reply (content is null
+    // when tool calls are present), and the bridge must NOT inject its own
+    // warning into the user-visible reply.
     assert.ok(
-      message.content.includes(literal),
-      "literal tool call should be preserved in content",
+      !String(message.content ?? "").includes(literal),
+      "raw tool call block must not leak into content",
     );
     assert.ok(
-      !message.content.includes("[WARNING"),
+      !String(message.content ?? "").includes("[WARNING"),
       "no bridge-authored warning expected: " + message.content,
     );
   } finally {

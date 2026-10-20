@@ -37,6 +37,7 @@ export class Metrics extends EventEmitter {
       ["latency.request", "histogram", "Request latency (ms)"],
       ["toolcalls.total", "counter", "Total tool calls processed"],
       ["toolcalls.malformed", "counter", "Malformed tool calls detected"],
+      ["toolcalls.undeclared_forwarded", "counter", "Undeclared tool calls forwarded to the client as structured calls"],
       ["toolcalls.recovered", "counter", "Malformed tool calls recovered/healed"],
       ["chats.cleaned", "counter", "Remote chats automatically cleaned"],
       // Stream metrics

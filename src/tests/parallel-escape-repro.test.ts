@@ -117,7 +117,7 @@ test("ParallelEscape repro: free alternate succeeds immediately (fix target)", a
   main.release();
 });
 
-test("ParallelEscape repro (control): all busy -> parallel escape fails account_busy", async () => {
+test("ParallelEscape repro (control): busy accounts now GRANT the parallel lease (no cross-session stall)", async () => {
   resetAccountConcurrencyForTests();
   const stickyId = "sticky-busy";
   const busyAlt = "busy-alt";
@@ -125,8 +125,17 @@ test("ParallelEscape repro (control): all busy -> parallel escape fails account_
   const main = await acquireAccountLease(stickyId, { label: "sess-main" });
   const other = await acquireAccountLease(busyAlt, { label: "sess-other" });
 
-  assert.strictEqual(tryAcquireAccountLease(stickyId, "sess-parallel", undefined, true), null);
-  assert.strictEqual(tryAcquireAccountLease(busyAlt, "sess-parallel", undefined, true), null);
+  // Regression guard for the 2026-08-20 stall: a parallel escape used to fail
+  // with account_busy when the account was already serving another session, and
+  // the request then rotated to a second busy account and hung for ~18s.
+  // Streams are unlimited per account now, so the escape always lands.
+  const onSticky = tryAcquireAccountLease(stickyId, "sess-parallel", undefined, true);
+  assert.ok(onSticky, "a busy account still grants the parallel lease (unlimited streams)");
+  onSticky!.release();
+
+  const onAlt = tryAcquireAccountLease(busyAlt, "sess-parallel", undefined, true);
+  assert.ok(onAlt, "a busy alternate still grants the parallel lease (unlimited streams)");
+  onAlt!.release();
 
   other.release();
   main.release();

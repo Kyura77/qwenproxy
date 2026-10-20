@@ -112,7 +112,7 @@ test("terminal-then-open upstream: cancelling the reader releases the stream loc
   }
 });
 
-test("abort while queued on the stream lock throws without an upstream request", async () => {
+test("an already-aborted request throws without an upstream request (no stream-lock queue)", async () => {
   const upstreamCalls: string[] = [];
   const restore = installMockFetch(
     () => terminalThenOpenStream(),
@@ -121,7 +121,7 @@ test("abort while queued on the stream lock throws without an upstream request",
   try {
     const account = "abort-queue-b";
 
-    // Holder occupies the account stream lock.
+    // Holder occupies the account.
     const holder = await createQwenStream(
       "Hold",
       true,
@@ -130,11 +130,12 @@ test("abort while queued on the stream lock throws without an upstream request",
       account,
     );
 
-    // Queued create with a controllable signal: passes the pre-lock check,
-    // then waits on the mutex. The acquire deadline / supersede abort fires
-    // while it is queued.
+    // Unlimited streams per account: the second request is NOT queued behind
+    // the holder, so the only window where an abort can still prevent the
+    // upstream request is before the call is made.
     const abort = new AbortController();
-    const queued = createQwenStream(
+    abort.abort();
+    const aborted = createQwenStream(
       "Queued",
       true,
       "qwen3.6-plus",
@@ -144,14 +145,12 @@ test("abort while queued on the stream lock throws without an upstream request",
       undefined,
       abort.signal,
     );
-    await new Promise((resolve) => setTimeout(resolve, 50));
 
-    abort.abort();
-    await holder.stream.cancel();
-
-    await assert.rejects(queued, /client aborted before stream creation/);
+    await assert.rejects(aborted, /client aborted before stream creation/);
     // The aborted attempt must not have made an upstream request.
     assert.strictEqual(upstreamCalls.length, 1);
+
+    await holder.stream.cancel();
   } finally {
     restore();
   }

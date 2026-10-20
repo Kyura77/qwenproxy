@@ -31,8 +31,10 @@ test("AccountConcurrency: multiple leases acquired immediately (unlimited stream
   const lease3 = await acquireAccountLease("acc-1");
   
   // All leases should be acquired immediately
-  assert.strictEqual(isAccountBusy("acc-1"), false);
-  
+  assert.ok(lease1 && lease2 && lease3);
+  // The account IS serving (busy) — unlimited streams means no queue, not "idle"
+  assert.strictEqual(isAccountBusy("acc-1"), true);
+
   lease1.release();
   lease2.release();
   lease3.release();
@@ -126,7 +128,7 @@ test("AccountConcurrency: timeout removes waiter and rejects", async () => {
   assert.ok(lease2);
 
   // Original leases still valid
-  assert.strictEqual(isAccountBusy("acc-timeout"), false);
+  assert.strictEqual(isAccountBusy("acc-timeout"), true);
   lease1.release();
   lease2.release();
   assert.strictEqual(isAccountBusy("acc-timeout"), false);
@@ -186,13 +188,13 @@ test("AccountConcurrency: different accounts do not block each other", async () 
   const leaseA = await acquireAccountLease("acc-a");
   const leaseB = await acquireAccountLease("acc-b");
 
-  // With unlimited streams, accounts are never busy
-  assert.strictEqual(isAccountBusy("acc-a"), false);
-  assert.strictEqual(isAccountBusy("acc-b"), false);
+  // Each account tracks its own leases — one account being busy never blocks the other
+  assert.strictEqual(isAccountBusy("acc-a"), true);
+  assert.strictEqual(isAccountBusy("acc-b"), true);
 
   leaseA.release();
   assert.strictEqual(isAccountBusy("acc-a"), false);
-  assert.strictEqual(isAccountBusy("acc-b"), false);
+  assert.strictEqual(isAccountBusy("acc-b"), true);
 
   leaseB.release();
 });

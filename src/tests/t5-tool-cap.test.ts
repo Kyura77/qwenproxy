@@ -136,10 +136,11 @@ test("T5: incremental deltas are not emitted beyond the cap", () => {
 
 // Reproduces the infinite WebSearch/WebFetch loop from 2026-09-18:
 // Qwen-native tool calls (WebSearch, WebFetch) are not in the client's
-// declared tools. The parser correctly preserves them as literal text, but
-// MUST count them toward the per-turn cap so isToolCapReached() fires and
-// the stream handler cancels the upstream. Without this, the model can
-// generate hundreds of undeclared calls without ever hitting the cap.
+// declared tools. They are now FORWARDED to the client as structured calls
+// (the client may still know the tool — progressive disclosure), but they
+// MUST count toward the per-turn cap so isToolCapReached() fires and the
+// stream handler cancels the upstream. Without this, the model can generate
+// hundreds of undeclared calls without ever hitting the cap.
 test("T5: undeclared tool calls count toward the per-turn cap", () => {
   const parser = new StreamingToolParser(READ_FILE_TOOLS, {
     maxToolCallsPerTurn: 3,
@@ -157,8 +158,9 @@ test("T5: undeclared tool calls count toward the per-turn cap", () => {
   );
   parser.flush();
 
-  // No structured tool calls emitted (they're undeclared)
-  assert.strictEqual(result.toolCalls.length, 0, "undeclared calls must not emit as structured tool calls");
+  // Forwarded as structured calls, but never past the cap
+  assert.strictEqual(result.toolCalls.length, 3, "only the calls within the cap are emitted");
+  assert.strictEqual(result.toolCalls[0].name, "WebSearch");
 
   // But the cap MUST be reached so the stream handler stops the upstream
   assert.ok(parser.isToolCapReached(), "cap must fire on undeclared tool calls to prevent infinite generation");
@@ -179,8 +181,8 @@ test("T5: mix of declared and undeclared calls shares the same cap", () => {
   );
   parser.flush();
 
-  // Only the declared call is emitted as structured
-  assert.strictEqual(result.toolCalls.length, 1, "only declared call emitted");
+  // Declared + forwarded undeclared calls share the cap
+  assert.strictEqual(result.toolCalls.length, 3, "cap shared by declared and undeclared calls");
   assert.strictEqual(result.toolCalls[0].name, "read_file");
 
   // Cap reached via combined count

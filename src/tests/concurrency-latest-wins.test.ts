@@ -302,27 +302,25 @@ test("StaleLease: sweep force-releases a lease held beyond the max duration", as
   lease.release(); // safe no-op after force-release
 });
 
-test("StaleLease: sweep delivers the freed slot to a waiting request", async () => {
+test("StaleLease: sweep releases a stale lease while a fresh lease keeps running", async () => {
   resetAccountConcurrencyForTests();
   const stale = await acquireAccountLease("acc-stale-waiter", { label: "stale" });
 
-  let granted = false;
-  const waiter = acquireAccountLease("acc-stale-waiter", {
-    label: "next",
-    timeoutMs: 5000,
-  }).then((l) => {
-    granted = true;
-    return l;
-  });
-
+  // Wait past ACCOUNT_LEASE_MAX_DURATION_MS (60ms in this suite), then take a
+  // fresh lease: acquiring triggers a sweep, which must drop only the stale one.
   await tick(80);
-  assert.strictEqual(granted, false);
-  sweepAllStaleLeases();
+  const live = await acquireAccountLease("acc-stale-waiter", { label: "live" });
+  assert.strictEqual(isAccountBusy("acc-stale-waiter"), true);
 
-  const lease2 = await waiter;
-  assert.strictEqual(granted, true);
-  lease2.release();
-  stale.release();
+  const snap = getAccountConcurrencySnapshot().find(
+    (s: any) => s.accountId === "acc-stale-waiter",
+  );
+  assert.ok(snap);
+  assert.strictEqual(snap!.holders.length, 1, "only the live lease survives the sweep");
+  assert.strictEqual(snap!.holders[0].label, "live");
+
+  live.release();
+  stale.release(); // safe no-op after force-release
 });
 
 test("StaleLease: sweep returns 0 when nothing is stale", async () => {
@@ -337,12 +335,23 @@ test("StaleLease: sweep returns 0 when nothing is stale", async () => {
 test("StaleLease: tryAcquire triggers a sweep and recovers a stuck slot", async () => {
   resetAccountConcurrencyForTests();
   const stale = await acquireAccountLease("acc-try-stale", { label: "stale" });
-  assert.strictEqual(tryAcquireAccountLease("acc-try-stale"), null);
 
-  await tick(80);
+  // Unlimited streams: a tryAcquire never fails for lack of a free slot — it
+  // grants immediately. The stale lease is still swept away on the way.
   const recovered = tryAcquireAccountLease("acc-try-stale", "recovered");
   assert.ok(recovered);
+
+  await tick(80);
+  const afterSweep = tryAcquireAccountLease("acc-try-stale", "after-sweep");
+  assert.ok(afterSweep);
+  const snap = getAccountConcurrencySnapshot().find(
+    (s: any) => s.accountId === "acc-try-stale",
+  );
+  assert.ok(snap);
+  assert.strictEqual(snap!.holders.length, 1, "the stale lease was swept");
+
   recovered!.release();
+  afterSweep!.release();
   stale.release();
 });
 

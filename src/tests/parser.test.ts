@@ -419,8 +419,26 @@ test("StreamingToolParser: preserves literal <tool_call> example in fenced code 
   assert.strictEqual(result.toolCalls.length, 0);
 });
 
-test("StreamingToolParser: preserves literal tool_call block when tool name is undeclared", () => {
+test("StreamingToolParser: forwards undeclared tool_call to the client as a structured call", () => {
   const parser = new StreamingToolParser(TOOLS);
+
+  const literal =
+    '<tool_call>{"name":"nome_da_ferramenta","arguments":{"parametro":"valor"}}</tool_call>';
+
+  const result = parser.feed(literal);
+  // A client that defers tools still knows the tool — it just did not advertise
+  // it. Neutering the call into prose leaves the client with a dead turn, so the
+  // call is forwarded as a real tool_call and the client decides.
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "nome_da_ferramenta");
+  assert.deepStrictEqual(result.toolCalls[0].arguments, { parametro: "valor" });
+});
+
+test("StreamingToolParser: preserves literal tool_call block when forwarding undeclared calls is disabled", () => {
+  const parser = new StreamingToolParser(TOOLS, {
+    forwardUndeclaredToolCalls: false,
+  });
 
   const literal =
     '<tool_call>{"name":"nome_da_ferramenta","arguments":{"parametro":"valor"}}</tool_call>';

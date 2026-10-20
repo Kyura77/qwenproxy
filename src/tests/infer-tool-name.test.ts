@@ -124,7 +124,7 @@ test("StreamingToolParser: fuzzy matches tool name across casing and delimiters 
   assert.strictEqual(res2.toolCalls[0].name, "readFile", "Must normalize snake_case to declared readFile");
 });
 
-test("StreamingToolParser: getSuccessfulToolCallCount remains 0 when tool is completely undeclared", () => {
+test("StreamingToolParser: undeclared tool call is forwarded to the client (not neutered into prose)", () => {
   const customTools = [
     {
       type: "function" as const,
@@ -136,6 +136,34 @@ test("StreamingToolParser: getSuccessfulToolCallCount remains 0 when tool is com
   ];
 
   const parser = new StreamingToolParser(customTools);
+  const chunk = '<tool_call>{"name": "totally_random_fake_tool", "arguments": {}}</tool_call>';
+  const res = parser.feed(chunk);
+  parser.flush();
+
+  // Forwarded: the client may still know the tool (progressive disclosure) and
+  // can execute it or return a proper "unknown tool" error result. Preserving it
+  // as prose leaves the client with a dead turn and no feedback.
+  assert.strictEqual(res.toolCalls.length, 1);
+  assert.strictEqual(res.toolCalls[0].name, "totally_random_fake_tool");
+  assert.strictEqual(res.text, "", "raw tool-call block must not leak into the visible text");
+  assert.strictEqual(parser.getSuccessfulToolCallCount(), 1, "forwarded call counts as a usable call");
+  assert.strictEqual(parser.getMalformedToolCalls().length, 0, "a forwarded call is not a malformed call");
+});
+
+test("StreamingToolParser: undeclared tool call is recorded as malformed when forwarding is disabled", () => {
+  const customTools = [
+    {
+      type: "function" as const,
+      function: {
+        name: "get_weather",
+        parameters: { type: "object", properties: { city: { type: "string" } } },
+      },
+    },
+  ];
+
+  const parser = new StreamingToolParser(customTools, {
+    forwardUndeclaredToolCalls: false,
+  });
   const chunk = '<tool_call>{"name": "totally_random_fake_tool", "arguments": {}}</tool_call>';
   const res = parser.feed(chunk);
   parser.flush();

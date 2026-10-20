@@ -33,6 +33,18 @@ export interface StreamingToolParserOptions {
   incrementalToolCalls?: boolean;
   /** Max tool calls per turn; 0 disables the cap. */
   maxToolCallsPerTurn?: number;
+  /**
+   * Forward tool calls whose name the client did NOT declare instead of
+   * preserving the raw block as prose. Default: true.
+   *
+   * Rationale: a client that defers tools (progressive disclosure) still knows
+   * the tool — it just did not advertise it in this request. Neutering the call
+   * into plain text leaves the client with a dead turn (no tool_call, no error
+   * result) and the model believing it acted. Forwarding it lets the client
+   * decide (execute it, or return a proper "unknown tool" error result that
+   * teaches the model to use the right path).
+   */
+  forwardUndeclaredToolCalls?: boolean;
 }
 
 interface IncrementalJsonToolSnapshot {
@@ -1286,6 +1298,8 @@ export class StreamingToolParser {
   private incrementalToolCalls = false;
   private activeIncrementalToolCall: ActiveIncrementalToolCall | null = null;
   private maxToolCallsPerTurn = 0;
+  /** Forward undeclared tool calls as structured calls instead of literal text. */
+  private forwardUndeclaredToolCalls = true;
   private emittedCallKeys = new Set<string>();
   private pendingToolCallDeltas: ToolCallDelta[] = [];
   private malformedToolCalls: Array<{
@@ -1314,6 +1328,7 @@ export class StreamingToolParser {
     this.setTools(tools);
     this.incrementalToolCalls = options.incrementalToolCalls ?? false;
     this.maxToolCallsPerTurn = Math.max(0, options.maxToolCallsPerTurn ?? 0);
+    this.forwardUndeclaredToolCalls = options.forwardUndeclaredToolCalls ?? true;
     if (isToolcallDebugEnabled()) {
       logger.debug("[parser] StreamingToolParser initialized", {
         toolsCount: tools.length,
@@ -1734,6 +1749,28 @@ export class StreamingToolParser {
 
   private isDeclaredToolName(name: string): boolean {
     return this.resolveDeclaredToolName(name) !== null;
+  }
+
+  /**
+   * Emit a tool call whose name the client did not declare, as a real
+   * structured call instead of literal prose.
+   *
+   * The client decides what to do with it: it may know the tool (progressive
+   * disclosure / deferred tools) and execute it, or return a proper
+   * "unknown tool" error result that the model can learn from. Preserving the
+   * block as text (the old behaviour) produced a dead turn with no feedback.
+   */
+  private finalizeUndeclaredToolCall(
+    tc: ParsedToolCall,
+    result: ParserResult,
+  ): void {
+    logger.warn("[parser] Forwarding undeclared tool call to client", {
+      toolName: tc.name,
+      declaredToolCount: this.declaredToolNames.length,
+      note: "client did not advertise this tool; forwarding as a structured call",
+    });
+    metrics.increment("toolcalls.undeclared_forwarded");
+    this.finalizeSuccessfulToolCall(tc, result);
   }
 
   private preserveLiteralToolCall(
@@ -2260,6 +2297,17 @@ export class StreamingToolParser {
     if (fnShorthand) {
       const resolvedName = this.resolveDeclaredToolName(fnShorthand.name);
       if (!resolvedName) {
+        if (this.forwardUndeclaredToolCalls) {
+          this.finalizeUndeclaredToolCall(
+            {
+              id: `call_${crypto.randomUUID()}`,
+              name: fnShorthand.name,
+              arguments: fnShorthand.arguments,
+            },
+            result,
+          );
+          return;
+        }
         this.recordMalformedToolCall(content, {
           undeclaredNames: [fnShorthand.name],
           category: "undeclared",
@@ -2301,6 +2349,17 @@ export class StreamingToolParser {
     if (xmlParsed) {
       const resolvedXmlName = this.resolveDeclaredToolName(xmlParsed.name);
       if (!resolvedXmlName) {
+        if (this.forwardUndeclaredToolCalls) {
+          this.finalizeUndeclaredToolCall(
+            {
+              id: `call_${crypto.randomUUID()}`,
+              name: xmlParsed.name,
+              arguments: xmlParsed.arguments,
+            },
+            result,
+          );
+          return;
+        }
         this.recordMalformedToolCall(content, {
           undeclaredNames: [xmlParsed.name],
           category: "undeclared",
@@ -2357,6 +2416,12 @@ export class StreamingToolParser {
           .map((tc) => tc.name)
           .filter((name) => !this.isDeclaredToolName(name));
         if (undeclaredToolNames.length > 0) {
+          if (this.forwardUndeclaredToolCalls) {
+            for (const tc of parsedCalls) {
+              this.finalizeUndeclaredToolCall(tc, result);
+            }
+            return;
+          }
           this.recordMalformedToolCall(content, {
             undeclaredNames: undeclaredToolNames,
             category: "undeclared",
@@ -2415,6 +2480,12 @@ export class StreamingToolParser {
           .map((tc) => tc.name)
           .filter((name) => !this.isDeclaredToolName(name));
         if (undeclaredToolNames.length > 0) {
+          if (this.forwardUndeclaredToolCalls) {
+            for (const tc of tcs) {
+              this.finalizeUndeclaredToolCall(tc, result);
+            }
+            return;
+          }
           this.recordMalformedToolCall(content, {
             undeclaredNames: undeclaredToolNames,
             category: "undeclared",

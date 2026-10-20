@@ -79,7 +79,7 @@ test("cancelling a created stream releases the per-account stream lock", async (
   }
 });
 
-test("an uncancelled stream holds the lock: next acquire blocks (phantom-wait repro)", async () => {
+test("a concurrent stream on the same account is NOT blocked (unlimited streams per account)", async () => {
   const restoreFetch = installMockFetch();
   let secondResult: Awaited<ReturnType<typeof createQwenStream>> | undefined;
   let secondFailed: unknown;
@@ -91,8 +91,7 @@ test("an uncancelled stream holds the lock: next acquire blocks (phantom-wait re
       undefined,
       ACCOUNT_B,
     );
-    // DO NOT cancel: this is the leak — the stream is dropped without
-    // cancel() (or its read loop died) so the lock stays held.
+    // The first stream is NOT cancelled: it keeps holding the account.
     const second = createQwenStream(
       "Prompt 2",
       true,
@@ -110,31 +109,24 @@ test("an uncancelled stream holds the lock: next acquire blocks (phantom-wait re
       },
     );
 
-    await assert.rejects(
-      Promise.race([
-        second,
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("expected lock block")), 300),
-        ),
-      ]),
-      /expected lock block/,
-    );
-
-    // Releasing the lock (the account.ts fix cancels the stream on abort)
-    // hands the lock to the queued waiter, which then proceeds.
-    await first.stream.cancel();
-    const recovered = await Promise.race([
+    // Unlimited streams per account: the second stream starts immediately
+    // instead of queueing behind the first one (the old cap made a second
+    // session look "stuck" for the whole duration of the first).
+    const granted = await Promise.race([
       second,
       new Promise<never>((_, reject) =>
         setTimeout(
-          () => reject(new Error("queued acquire never recovered after cancel")),
+          () => reject(new Error("second stream was blocked by the first")),
           5_000,
         ),
       ),
     ]);
-    await recovered.stream.cancel();
+    assert.ok(secondResult, "second stream must be granted without waiting");
     assert.equal(secondFailed, undefined);
-    assert.ok(secondResult, "queued acquire should complete after lock release");
+
+    // Cancelling both is still safe (idempotent release).
+    await granted.stream.cancel();
+    await first.stream.cancel();
   } finally {
     restoreFetch();
   }
